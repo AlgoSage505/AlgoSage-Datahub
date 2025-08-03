@@ -2,7 +2,7 @@ from kiteconnect import KiteConnect
 import webbrowser
 
 api_key = "m03pvkl6d69rs5g6"  # Replace!
-api_secret = "9hbk4qm0ogpl36ys17iecjsvp4clcesd"  # Replace!
+api_secret = "06528ij4l9ww2fo5shj4kgrzmgsd2f39"  # Replace!
 
 kite = KiteConnect(api_key=api_key)
 login_url = kite.login_url()

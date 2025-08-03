@@ -3,12 +3,12 @@ import time
 import sqlite3
 import os
 import requests
-import re
 from urllib.parse import urlparse, parse_qs
 from kiteconnect import KiteConnect, KiteTicker
 from dateutil import tz  # For IST timezone
 import pyotp  # For TOTP
 from dotenv import load_dotenv  # For .env secrets
+import re  # For extracting from error
 
 # Load secrets from .env
 load_dotenv()
@@ -24,47 +24,61 @@ credentials = {
 # Function to automate login and get request_token
 def get_request_token(creds):
     session = requests.Session()
-    kite = KiteConnect(api_key=creds["api_key"])
     
-    # Step 1: Get login page (to set cookies)
-    session.get(kite.login_url())
+    # Add browser disguise (User-Agent)
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
+    })
     
-    # Step 2: POST username/password
+    # Initial GET to set cookies
+    initial_response = session.get('https://kite.zerodha.com')
+    print("Initial GET status:", initial_response.status_code)  # Debug
+    
+    # Step 1: POST username/password
     login_payload = {
         "user_id": creds["username"],
         "password": creds["password"],
     }
     login_response = session.post("https://kite.zerodha.com/api/login", data=login_payload)
     
-    if login_response.status_code != 200 or "success" not in login_response.json().get("status", ""):
-        raise ValueError("Login failed: Check username/password.")
+    if login_response.status_code != 200 or login_response.json().get("status") != "success":
+        raise ValueError("Login failed: Check username/password. Details: " + login_response.text)
     
     login_data = login_response.json()["data"]
     
-    # Step 3: POST TOTP
+    # Step 2: POST TOTP
     totp = pyotp.TOTP(creds["totp_secret"]).now()  # Generate current 6-digit code
     twofa_payload = {
         "user_id": creds["username"],
         "request_id": login_data["request_id"],
         "twofa_value": totp,
         "twofa_type": "totp",
+        "skip_session": True,
     }
     twofa_response = session.post("https://kite.zerodha.com/api/twofa", data=twofa_payload)
     
-    if twofa_response.status_code != 200 or "success" not in twofa_response.json().get("status", ""):
-        raise ValueError(f"TOTP failed: Check secret or code: {totp}")
+    if twofa_response.status_code != 200 or twofa_response.json().get("status") != "success":
+        raise ValueError(f"TOTP failed: Check secret or code: {totp}. Details: " + twofa_response.text)
     
-    # Step 4: Get request_token from redirect
-    response = session.get(kite.login_url())
-    parsed = urlparse(response.url)
-    if parsed.hostname != "127.0.0.1":  # Expected redirect
-        raise ValueError("Unexpected redirect URL.")
-    
-    query_params = parse_qs(parsed.query)
-    if "request_token" not in query_params:
-        raise ValueError("No request_token in URL.")
-    
-    return query_params["request_token"][0]
+    # Step 3: Get request_token from redirect (let it fail and extract from error)
+    kite = KiteConnect(api_key=creds["api_key"])
+    login_url = kite.login_url()
+    try:
+        response = session.get(login_url)
+        parsed = urlparse(response.url)
+        query_params = parse_qs(parsed.query)
+        if "request_token" not in query_params:
+            raise ValueError("No request_token in successful response URL.")
+        return query_params["request_token"][0]
+    except Exception as e:
+        # Extract from error message (common in automated login)
+        pattern = r"request_token=[A-Za-z0-9]+"
+        match = re.search(pattern, str(e))
+        if match:
+            query_params = parse_qs(match.group(0))
+            return query_params["request_token"][0]
+        else:
+            raise ValueError("No request_token in error message. Check credentials or app settings. Error: " + str(e))
 
 # Generate access_token automatically
 try:
@@ -78,13 +92,11 @@ except Exception as e:
     print("Error generating token:", e)
     exit(1)  # Stop if fails
 
-# Now the rest of your script...
-
-# DB connection (using SQLite - simple file-based)
+# DB connection (using SQLite)
 conn = sqlite3.connect('data.db')
 cursor = conn.cursor()
 
-# Create table if not exists
+# Create table
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS stock_data (
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -101,26 +113,237 @@ CREATE TABLE IF NOT EXISTS stock_data (
 """)
 conn.commit()
 
-# List of scrips from CSV (add all ~250 here)
+# Full list of scrips from your CSV (all unique names, with exchanges)
 scrips = [
     {"name": "SENSEX", "exchange": "BSE"},
     {"name": "NIFTY 50", "exchange": "NSE"},
     {"name": "NIFTY BANK", "exchange": "NSE"},
     {"name": "360ONE", "exchange": "NSE"},
     {"name": "ABB", "exchange": "NSE"},
-    # ... Add the full list, e.g.:
+    {"name": "ABCAPITAL", "exchange": "NSE"},
+    {"name": "ABFRL", "exchange": "NSE"},
+    {"name": "ADANIENSOL", "exchange": "NSE"},
+    {"name": "ADANIENT", "exchange": "NSE"},
+    {"name": "ADANIGREEN", "exchange": "NSE"},
+    {"name": "ADANIPORTS", "exchange": "NSE"},
+    {"name": "ALKEM", "exchange": "NSE"},
+    {"name": "AMBER", "exchange": "NSE"},
+    {"name": "AMBUJACEM", "exchange": "NSE"},
+    {"name": "ANGELONE", "exchange": "NSE"},
+    {"name": "APLAPOLLO", "exchange": "NSE"},
+    {"name": "APOLLOHOSP", "exchange": "NSE"},
+    {"name": "ASHOKLEY", "exchange": "NSE"},
+    {"name": "ASIANPAINT", "exchange": "NSE"},
+    {"name": "ASTRAL", "exchange": "NSE"},
+    {"name": "ATGL", "exchange": "NSE"},
+    {"name": "AUBANK", "exchange": "NSE"},
+    {"name": "AUROPHARMA", "exchange": "NSE"},
+    {"name": "AXISBANK", "exchange": "NSE"},
+    {"name": "BAJAJ-AUTO", "exchange": "NSE"},
+    {"name": "BAJAJFINSV", "exchange": "NSE"},
+    {"name": "BAJFINANCE", "exchange": "NSE"},
+    {"name": "BANDHANBNK", "exchange": "NSE"},
+    {"name": "BANKBARODA", "exchange": "NSE"},
+    {"name": "BANKINDIA", "exchange": "NSE"},
+    {"name": "BDL", "exchange": "NSE"},
+    {"name": "BEL", "exchange": "NSE"},
+    {"name": "BHARATFORG", "exchange": "NSE"},
+    {"name": "BHARTIARTL", "exchange": "NSE"},
+    {"name": "BHEL", "exchange": "NSE"},
+    {"name": "BIOCON", "exchange": "NSE"},
+    {"name": "BLUESTARCO", "exchange": "NSE"},
+    {"name": "BOSCHLTD", "exchange": "NSE"},
+    {"name": "BPCL", "exchange": "NSE"},
+    {"name": "BRITANNIA", "exchange": "NSE"},
+    {"name": "BSE", "exchange": "NSE"},
+    {"name": "CAMS", "exchange": "NSE"},
+    {"name": "CANBK", "exchange": "NSE"},
+    {"name": "CDSL", "exchange": "NSE"},
+    {"name": "CESC", "exchange": "NSE"},
+    {"name": "CGPOWER", "exchange": "NSE"},
+    {"name": "CHOLAFIN", "exchange": "NSE"},
+    {"name": "CIPLA", "exchange": "NSE"},
+    {"name": "COALINDIA", "exchange": "NSE"},
+    {"name": "COFORGE", "exchange": "NSE"},
+    {"name": "COLPAL", "exchange": "NSE"},
+    {"name": "CONCOR", "exchange": "NSE"},
+    {"name": "CROMPTON", "exchange": "NSE"},
+    {"name": "CUMMINSIND", "exchange": "NSE"},
+    {"name": "CYIENT", "exchange": "NSE"},
+    {"name": "DABUR", "exchange": "NSE"},
+    {"name": "DALBHARAT", "exchange": "NSE"},
+    {"name": "DELHIVERY", "exchange": "NSE"},
+    {"name": "DIVISLAB", "exchange": "NSE"},
+    {"name": "DIXON", "exchange": "NSE"},
+    {"name": "DLF", "exchange": "NSE"},
+    {"name": "DMART", "exchange": "NSE"},
+    {"name": "DRREDDY", "exchange": "NSE"},
+    {"name": "EICHERMOT", "exchange": "NSE"},
+    {"name": "ETERNAL", "exchange": "NSE"},
+    {"name": "EXIDEIND", "exchange": "NSE"},
+    {"name": "FEDERALBNK", "exchange": "NSE"},
+    {"name": "FORTIS", "exchange": "NSE"},
+    {"name": "GAIL", "exchange": "NSE"},
+    {"name": "GLENMARK", "exchange": "NSE"},
+    {"name": "GMRAIRPORT", "exchange": "NSE"},
+    {"name": "GODREJCP", "exchange": "NSE"},
+    {"name": "GODREJPROP", "exchange": "NSE"},
+    {"name": "GRANULES", "exchange": "NSE"},
+    {"name": "GRASIM", "exchange": "NSE"},
+    {"name": "HAL", "exchange": "NSE"},
+    {"name": "HAVELLS", "exchange": "NSE"},
+    {"name": "HCLTECH", "exchange": "NSE"},
+    {"name": "HDFCAMC", "exchange": "NSE"},
+    {"name": "HDFCBANK", "exchange": "NSE"},
+    {"name": "HDFCLIFE", "exchange": "NSE"},
+    {"name": "HEROMOTOCO", "exchange": "NSE"},
+    {"name": "HFCL", "exchange": "NSE"},
+    {"name": "HINDALCO", "exchange": "NSE"},
+    {"name": "HINDPETRO", "exchange": "NSE"},
+    {"name": "HINDUNILVR", "exchange": "NSE"},
+    {"name": "HINDZINC", "exchange": "NSE"},
+    {"name": "HUDCO", "exchange": "NSE"},
+    {"name": "ICICIBANK", "exchange": "NSE"},
+    {"name": "ICICIGI", "exchange": "NSE"},
+    {"name": "ICICIPRULI", "exchange": "NSE"},
+    {"name": "IDEA", "exchange": "NSE"},
+    {"name": "IDFCFIRSTB", "exchange": "NSE"},
+    {"name": "IEX", "exchange": "NSE"},
+    {"name": "IGL", "exchange": "NSE"},
+    {"name": "IIFL", "exchange": "NSE"},
+    {"name": "INDHOTEL", "exchange": "NSE"},
+    {"name": "INDIANB", "exchange": "NSE"},
+    {"name": "INDIGO", "exchange": "NSE"},
+    {"name": "INDUSINDBK", "exchange": "NSE"},
+    {"name": "INDUSTOWER", "exchange": "NSE"},
+    {"name": "INFY", "exchange": "NSE"},
+    {"name": "INOXWIND", "exchange": "NSE"},
+    {"name": "IOC", "exchange": "NSE"},
+    {"name": "IRB", "exchange": "NSE"},
+    {"name": "IRCTC", "exchange": "NSE"},
+    {"name": "IREDA", "exchange": "NSE"},
+    {"name": "IRFC", "exchange": "NSE"},
+    {"name": "ITC", "exchange": "NSE"},
+    {"name": "JINDALSTEL", "exchange": "NSE"},
+    {"name": "JIOFIN", "exchange": "NSE"},
+    {"name": "JSL", "exchange": "NSE"},
+    {"name": "JSWENERGY", "exchange": "NSE"},
+    {"name": "JSWSTEEL", "exchange": "NSE"},
+    {"name": "JUBLFOOD", "exchange": "NSE"},
+    {"name": "KALYANKJIL", "exchange": "NSE"},
+    {"name": "KAYNES", "exchange": "NSE"},
+    {"name": "KEI", "exchange": "NSE"},
+    {"name": "KFINTECH", "exchange": "NSE"},
+    {"name": "KOTAKBANK", "exchange": "NSE"},
+    {"name": "KPITTECH", "exchange": "NSE"},
+    {"name": "LAURUSLABS", "exchange": "NSE"},
+    {"name": "LICHSGFIN", "exchange": "NSE"},
+    {"name": "LICI", "exchange": "NSE"},
+    {"name": "LODHA", "exchange": "NSE"},
+    {"name": "LT", "exchange": "NSE"},
+    {"name": "LTF", "exchange": "NSE"},
+    {"name": "LTIM", "exchange": "NSE"},
+    {"name": "LUPIN", "exchange": "NSE"},
+    {"name": "M&M", "exchange": "NSE"},
+    {"name": "MANAPPURAM", "exchange": "NSE"},
+    {"name": "MANKIND", "exchange": "NSE"},
+    {"name": "MARICO", "exchange": "NSE"},
+    {"name": "MARUTI", "exchange": "NSE"},
+    {"name": "MAXHEALTH", "exchange": "NSE"},
+    {"name": "MAZDOCK", "exchange": "NSE"},
+    {"name": "MCX", "exchange": "NSE"},
+    {"name": "MFSL", "exchange": "NSE"},
+    {"name": "MOTHERSON", "exchange": "NSE"},
+    {"name": "MPHASIS", "exchange": "NSE"},
+    {"name": "MUTHOOTFIN", "exchange": "NSE"},
+    {"name": "NATIONALUM", "exchange": "NSE"},
+    {"name": "NAUKRI", "exchange": "NSE"},
+    {"name": "NBCC", "exchange": "NSE"},
+    {"name": "NCC", "exchange": "NSE"},
+    {"name": "NESTLEIND", "exchange": "NSE"},
+    {"name": "NHPC", "exchange": "NSE"},
+    {"name": "NMDC", "exchange": "NSE"},
+    {"name": "NTPC", "exchange": "NSE"},
+    {"name": "NUVAMA", "exchange": "NSE"},
+    {"name": "NYKAA", "exchange": "NSE"},
+    {"name": "OBEROIRLTY", "exchange": "NSE"},
+    {"name": "OFSS", "exchange": "NSE"},
+    {"name": "OIL", "exchange": "NSE"},
+    {"name": "ONGC", "exchange": "NSE"},
+    {"name": "PAGEIND", "exchange": "NSE"},
+    {"name": "PATANJALI", "exchange": "NSE"},
+    {"name": "PAYTM", "exchange": "NSE"},
+    {"name": "PERSISTENT", "exchange": "NSE"},
+    {"name": "PETRONET", "exchange": "NSE"},
+    {"name": "PFC", "exchange": "NSE"},
+    {"name": "PGEL", "exchange": "NSE"},
+    {"name": "PHOENIXLTD", "exchange": "NSE"},
+    {"name": "PIDILITIND", "exchange": "NSE"},
+    {"name": "PIIND", "exchange": "NSE"},
+    {"name": "PNB", "exchange": "NSE"},
+    {"name": "PNBHOUSING", "exchange": "NSE"},
+    {"name": "POLICYBZR", "exchange": "NSE"},
+    {"name": "POLYCAB", "exchange": "NSE"},
+    {"name": "POONAWALLA", "exchange": "NSE"},
+    {"name": "POWERGRID", "exchange": "NSE"},
+    {"name": "PPLPHARMA", "exchange": "NSE"},
+    {"name": "PRESTIGE", "exchange": "NSE"},
+    {"name": "RBLBANK", "exchange": "NSE"},
+    {"name": "RECLTD", "exchange": "NSE"},
+    {"name": "RELIANCE", "exchange": "NSE"},
+    {"name": "RVNL", "exchange": "NSE"},
+    {"name": "SAIL", "exchange": "NSE"},
+    {"name": "SBICARD", "exchange": "NSE"},
+    {"name": "SBILIFE", "exchange": "NSE"},
+    {"name": "SBIN", "exchange": "NSE"},
+    {"name": "SHREECEM", "exchange": "NSE"},
+    {"name": "SHRIRAMFIN", "exchange": "NSE"},
+    {"name": "SIEMENS", "exchange": "NSE"},
+    {"name": "SJVN", "exchange": "NSE"},
+    {"name": "SOLARINDS", "exchange": "NSE"},
+    {"name": "SONACOMS", "exchange": "NSE"},
+    {"name": "SRF", "exchange": "NSE"},
+    {"name": "SUNPHARMA", "exchange": "NSE"},
+    {"name": "SUPREMEIND", "exchange": "NSE"},
+    {"name": "SUZLON", "exchange": "NSE"},
+    {"name": "SYNGENE", "exchange": "NSE"},
+    {"name": "TATACHEM", "exchange": "NSE"},
+    {"name": "TATACONSUM", "exchange": "NSE"},
+    {"name": "TATAELXSI", "exchange": "NSE"},
+    {"name": "TATAMOTORS", "exchange": "NSE"},
+    {"name": "TATAPOWER", "exchange": "NSE"},
+    {"name": "TATASTEEL", "exchange": "NSE"},
+    {"name": "TATATECH", "exchange": "NSE"},
+    {"name": "TCS", "exchange": "NSE"},
+    {"name": "TECHM", "exchange": "NSE"},
+    {"name": "TIINDIA", "exchange": "NSE"},
+    {"name": "TITAGARH", "exchange": "NSE"},
+    {"name": "TITAN", "exchange": "NSE"},
+    {"name": "TORNTPHARM", "exchange": "NSE"},
+    {"name": "TORNTPOWER", "exchange": "NSE"},
+    {"name": "TRENT", "exchange": "NSE"},
+    {"name": "TVSMOTOR", "exchange": "NSE"},
+    {"name": "ULTRACEMCO", "exchange": "NSE"},
+    {"name": "UNIONBANK", "exchange": "NSE"},
+    {"name": "UNITDSPR", "exchange": "NSE"},
+    {"name": "UNOMINDA", "exchange": "NSE"},
+    {"name": "UPL", "exchange": "NSE"},
+    {"name": "VBL", "exchange": "NSE"},
+    {"name": "VEDL", "exchange": "NSE"},
+    {"name": "VOLTAS", "exchange": "NSE"},
+    {"name": "WIPRO", "exchange": "NSE"},
+    {"name": "YESBANK", "exchange": "NSE"},
     {"name": "ZYDUSLIFE", "exchange": "NSE"}
-    # Paste all from your CSV, like {"name": "ABCAPITAL", "exchange": "NSE"}, etc.
 ]
 
 # Symbol mappings for indices
 symbol_map = {
-    "NIFTY 50": {"spot_symbol": "NIFTY 50", "future_name": "NIFTY"},
+    "NIFTY 50": {"spot_symbol": "NIFTY50", "future_name": "NIFTY"},
     "NIFTY BANK": {"spot_symbol": "BANKNIFTY", "future_name": "BANKNIFTY"},
     "SENSEX": {"spot_symbol": "SENSEX", "future_name": "SENSEX"}
 }
 
-# Function to get immediate future instrument
+# Get immediate future
 def get_immediate_future(base_name, fut_exchange):
     try:
         instruments = kite.instruments()
@@ -144,7 +367,7 @@ for scrip in scrips:
     name = scrip['name']
     exch = scrip['exchange']
     spot_symbol = symbol_map.get(name, {"spot_symbol": name})['spot_symbol']
-    spot_instrument = f"{exch}:{spot_symbol.replace(' ', '%20')}"  # URL encode spaces
+    spot_instrument = f"{exch}:{spot_symbol.replace(' ', '%20')}"
     
     fut_exchange = 'BFO' if name == 'SENSEX' else 'NFO'
     future_name = symbol_map.get(name, {"future_name": name})['future_name']
@@ -154,12 +377,11 @@ for scrip in scrips:
         future_oi_tracker[future_instrument] = 0
     instrument_list.append(spot_instrument)
 
-# Function to fetch and store data
+# Fetch and store
 def fetch_and_store():
     data_rows = []
     quotes = {}
     
-    # Batch fetch (max 500 per call, we use 250 safe)
     for i in range(0, len(instrument_list), 250):
         batch = instrument_list[i:i+250]
         try:
@@ -194,7 +416,6 @@ def fetch_and_store():
         row = (str(current_time), name, exch, pct_chng, day_open, prev_close, ltp, future_ltp, future_oi, oi_change)
         data_rows.append(row)
     
-    # Batch insert
     cursor.executemany("""
         INSERT INTO stock_data (timestamp, stock_index_name, exchange, pct_chng, day_open, prev_day_close, ltp, future_ltp, future_oi, future_oi_change)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -202,13 +423,12 @@ def fetch_and_store():
     conn.commit()
     print("Data stored successfully.")
 
-# Websocket setup with error handling
+# Websocket
 def setup_websocket():
     kws = KiteTicker(credentials["api_key"], access_token)
     
     def on_ticks(ws, ticks):
         for tick in ticks:
-            # Update LTP etc.
             print(f"Tick: {tick['instrument_token']} LTP = {tick.get('last_price')}")
     
     def on_connect(ws, response):
@@ -230,9 +450,9 @@ def setup_websocket():
     kws.on_error = on_error
     kws.on_close = on_close
     
-    kws.connect(threaded=True)  # Run in background
+    kws.connect(threaded=True)
 
-# Scanning at 9:55 IST
+# Scan
 def scan_at_955():
     ist = datetime.datetime.now(tz.gettz('Asia/Kolkata'))
     if ist.hour == 9 and ist.minute == 55:
@@ -242,7 +462,6 @@ def scan_at_955():
         
         filtered_stocks = []
         for row in latest_data:
-            # Unpack: adjust based on columns (timestamp is 0, name 1, etc.)
             name = row[1]
             pct_chng = row[3]
             prev_close = row[5]
@@ -253,11 +472,11 @@ def scan_at_955():
         print("Filtered Stocks (>2% change, 250-3500 price):", [s[0] for s in filtered_stocks])
         print("Top 10 Highlighted:", [s[0] for s in top_10])
 
-# Main loop
+# Main
 setup_websocket()
 while True:
     ist_now = datetime.datetime.now(tz.gettz('Asia/Kolkata'))
-    if 9 <= ist_now.hour <= 15:  # Approx market hours
+    if 9 <= ist_now.hour <= 15:
         fetch_and_store()
         scan_at_955()
-    time.sleep(300)  # Poll every 5 min
+    time.sleep(300)
